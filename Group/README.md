@@ -1,26 +1,36 @@
-# 解决一个真实的分组问题
-## 原来后台能看到这么多东西
-### 原来数据如此丑陋
+# 分组与匹配工具 — Group/
 
-## 匹配与打分逻辑
+此目录包含将问卷数据清洗、计算两两相似度并按相似度贪心分组的若干脚本。下面给出每个主要脚本的简短说明与典型使用顺序。
 
-以下为本仓库中匹配与打分逻辑的简要说明，具体实现见 [match.py](Group/match.py#L1-L399)。
+主要脚本一览
+- `preprocess.py`：读取原始 CSV（默认 `test.csv`），做字段探测与清洗，将问卷的原始答案和紧凑的数值特征（单选编码、部分多选 one-hot、`philosophy` 分数与类型、`q11_quality` 等）输出为 `trait.csv`。
+- `calculate_pairs.py`：包含 `compute_similarity(i, j, df)`。按问题层面的规则（单选比较、多选 Jaccard、文本回退、philosophy 接近度等）计算两人匹配度。
+- `make_matrix.py`：载入 `trait.csv`，对每对被试调用 `calculate_pairs.compute_similarity`，生成并写出纯数值方阵 `matrix.csv`（行列标签为 `survey_id` 或 `person_id`）。
+- `divide_groups.py`：基于 `matrix.csv` 实现贪心分组策略，包含两种方式：`greedy_grouping`（按对排序、可合并/替换）和 `force_grouping_exact(..., group_size=4)`（贪心填充种子以尽力生成每组恰好 4 人，支持最大迭代上限以防死循环）。脚本当前采用 `force_grouping_exact` 为默认入口。
 
-- **数据预处理**: 对 CSV 中的字段做清洗、去空格并统一命名；多选项通过正则分隔（分隔符包括 `; , ， | 换行`）；尝试识别邮箱、问卷编号、学号等字段并合成 `person_id`（格式：survey---student---email）；对邮箱做简单正则校验。
 
-- **特征构建**: 将多选题（赛道、掌控部分、熟悉技能）使用 `MultiLabelBinarizer` 做 one-hot 编码；单选题（首要目标）也用 one-hot 处理；将 `philosophy`（由多道题聚合得出）作为额外的分类特征加入，最终用 `numpy.hstack` 合并为每人的特征向量矩阵 `X`。
+典型工作流程
 
-- **philosophy 打分规则**: 基于问卷中的若干题（代码中映射为 Q12-Q15）分别打分再求和：
-	- Q12: 含“主导/主导者”得 2 分，含“分析/分析者”得 1 分，否则 0 分；
-	- Q13: 含“内归因/反思”得 1 分，否则 0 分；
-	- Q14: 含“死磕/不睡”得 2 分，含“收缩/砍”得 1 分，否则 0 分；
-	- Q15: 含“实用”得 1 分，否则 0 分。
-	- 总分映射为标签：>=5 -> 强驱动型；4 -> 务实且有主见；2-3 -> 平衡型；<2 -> 协作/体验优先。
+1. 清洗并导出特征：
+```bash
+python preprocess.py    # 生成 trait.csv
+```
+2. 计算相似度矩阵：
+```bash
+python make_matrix.py   # 生成 matrix.csv
+```
+3. 生成分组（每组 4 人为默认）：
+```bash
+python divide_groups.py # 打印/输出分组
+```
+4. （可选）查看每人 Top-K 匹配：
+```bash
+python -c "import pandas as pd; import calculate_pairs; df=pd.read_csv('trait.csv'); print(calculate_pairs.find_top_matches(df, top_k=5)[:5])"
+```
 
-- **相似度与推荐**: 使用余弦相似度（cosine similarity）衡量两人特征向量的相似性；若某一向量范数为 0，则相似度定义为 0；对每个人计算与其他所有人的相似度并按从大到小排序，取 top-K 作为匹配推荐（代码中可通过 `top_k` 参数调整）。
+注意事项与配置
+- 若要重现/调试匹配逻辑，主要查看 `calculate_pairs.py` 中的 `compute_similarity`，其含有可调整的权重和回退逻辑。  
+- `make_matrix.py` 依赖 `trait.csv` 中的若干 `_code/_count/_score/_quality` 列，请先运行 `preprocess.py` 并确认输出。  
+- `divide_groups.py` 提供可配置的 `group_size` 与 `max_iters` 参数；若希望改变“踢出”策略或随机性，可修改文件顶部的随机种子或相应逻辑。  
 
-- **输出产物**: 脚本会导出 `choices_per_person.csv`（每人一行的摘要）、按题目统计的可视化图（若安装 matplotlib）、人-特征热图 `person_feature_matrix.png`、以及每人回答的图片 `person_answers_*.png`（若 matplotlib 可用）。
-
-- **可配置项**: CSV 路径由 `CSV_PATH`（默认在脚本目录下的 `test.csv`）控制；推荐结果的数量通过 `top_k` 控制；若需改进可扩展更多文本或 NLP 特征。
-
-如需查看或调整具体实现，请查看实现文件：[match.py](Group/match.py#L1-L399)。
+如果需要我把 README 再精简、加示例输出或补充每个函数的调用样例，我可以继续修改。
