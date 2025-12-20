@@ -324,6 +324,15 @@ def export_traits(traits: pd.DataFrame, out_path: Path):
         if c in traits.columns and c not in cols:
             cols.append(c)
 
+    # include q7/q9 one-hot indicator columns and selection counts when available
+    for cnt in ('q7_count', 'q9_count'):
+        if cnt in traits.columns and cnt not in cols:
+            cols.append(cnt)
+    for prefix in ('q7_', 'q9_'):
+        for c in traits.columns:
+            if c.startswith(prefix) and c not in cols:
+                cols.append(c)
+
     # # include one-hot indicator columns produced by MultiLabelBinarizer: they typically
     # # have an underscore in the name but are not `_raw`/`_code`/`_count` etc.
     # onehot_candidates = [c for c in traits.columns if ('_' in c and not c.endswith('_raw') and not c.endswith('_code') and not c.endswith('_count') and not c.endswith('_score') and not c.endswith('_quality') and not c.startswith('philosophy'))]

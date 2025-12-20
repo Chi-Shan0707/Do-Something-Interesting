@@ -46,15 +46,22 @@ def compute(i: int, j: int, df: pd.DataFrame):
     else:
         score += 1.5  # 不同目标也可能互补
     
-    # 07: multi-select tracks are stored as binary one-hot columns (0/1). Compute Jaccard similarity.
-    q7_cols = [c for c in df.columns if c.startswith('8.你最感兴趣的赛道是？:')]
-    # use boolean checks against 1 (int) coming from one-hot indicators
-    common_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
-    total_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
-    if total_tracks > 0:
-        jaccard = common_tracks / total_tracks
-        # scale contribution to the overall matching score
-        score += jaccard * 2.2
+    # 07: multi-select tracks — prefer raw `q7_raw` Jaccard similarity when available
+    if 'q7_raw' in df.columns:
+        set_i = set(parse_multi(df.at[i, 'q7_raw']))
+        set_j = set(parse_multi(df.at[j, 'q7_raw']))
+        union = set_i | set_j
+        if union:
+            jaccard = len(set_i & set_j) / len(union)
+            score += jaccard * 2.2
+    else:
+        # fallback to legacy one-hot columns (long header names)
+        q7_cols = [c for c in df.columns if c.startswith('8.你最感兴趣的赛道是？:') or c.startswith('q7_')]
+        common_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
+        total_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
+        if total_tracks > 0:
+            jaccard = common_tracks / total_tracks
+            score += jaccard * 2.0
     
     # 08: 掌控部分 
     if df.iloc[i]['q8_code'] == df.iloc[j]['q8_code']:
@@ -62,13 +69,21 @@ def compute(i: int, j: int, df: pd.DataFrame):
     else:
         score += 2.0  # 不同部分可能互补
     
-    # 09: skills (multi-select one-hot). same Jaccard approach as tracks
-    q9_cols = [c for c in df.columns if c.startswith('11.其他技能（选填）_')]
-    common_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
-    total_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
-    if total_skills > 0:
-        jaccard = common_skills / total_skills
-        score += jaccard * 2.0
+    # 09: skills (multi-select) — prefer raw `q9_raw` Jaccard similarity when available
+    if 'q9_raw' in df.columns:
+        set_i = set(parse_multi(df.at[i, 'q9_raw']))
+        set_j = set(parse_multi(df.at[j, 'q9_raw']))
+        union = set_i | set_j
+        if union:
+            jaccard = len(set_i & set_j) / len(union)
+            score += jaccard * 1.5+len(union)*1.5
+    else:
+        q9_cols = [c for c in df.columns if c.startswith('11.其他技能（选填）_') or c.startswith('q9_')]
+        common_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
+        total_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
+        if total_skills > 0:
+            jaccard = common_skills / total_skills
+            score += jaccard * 2.0
     
     
     # q11_quality - 相似质量高分
