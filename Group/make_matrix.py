@@ -7,9 +7,10 @@ import calculate_pairs
 def load_traits(path: Path):
     df = pd.read_csv(str(path), dtype=str).fillna('')
     # convert numeric-ish columns
+    # Many columns are encoded as strings in the CSV; convert compact numeric features back to numeric type.
+    # `pd.to_numeric(..., errors='coerce')` safely converts non-numeric to NaN, then we fill missing with 0.
     for c in df.columns:
-        if c.endswith('_code') or c.endswith('_count') or c.endswith('_score') or c.endswith('_quality'):
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+       df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     return df
 
 
@@ -21,13 +22,16 @@ def build_matrix(df: pd.DataFrame):
         ids = df['survey_id'].astype(str).tolist()
     else:
         ids = df['person_id'].astype(str).tolist() if 'person_id' in df.columns else [str(i) for i in range(n)]
+    # Pre-allocate a NumPy array for speed; nested loops fill pairwise similarity scores.
+    # Using NumPy arrays is much faster and more memory-efficient for numeric matrices than Python lists.
     mat = np.zeros((n, n), dtype=float)
     for i in range(n):
         for j in range(n):
             if i == j:
                 mat[i, j] = 1.0
             else:
-                mat[i, j] = calculate_pairs.compute_similarity(i, j, df)
+                # compute_similarity expects integer positions and the DataFrame
+                mat[i, j] = calculate_pairs.compute(i, j, df)
     mat_df = pd.DataFrame(mat, index=ids, columns=ids)
     # ensure square numeric-only CSV and hide index/column name
     mat_df.index.name = ''

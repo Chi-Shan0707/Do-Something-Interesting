@@ -14,6 +14,8 @@ def split_multi(s):
         return []
     if isinstance(s, (list, tuple)):
         return list(s)
+    # Use Python's `re.split` to split on multiple separators (commas, semicolons, newlines).
+    # We convert to string to be defensive against numeric/missing input and strip whitespace.
     return [x.strip() for x in re.split(SEPARATORS_RE, str(s)) if x.strip()]
 
 
@@ -21,6 +23,7 @@ def detect_columns(df: pd.DataFrame):
     """Detect important columns: survey id, email, timestamp, and q4..q15 columns."""
     col_map = {}
     for c in df.columns:
+        # lowercase/strip once for lightweight heuristics over headers
         lc = c.lower()
         cs = c.strip()
         if '邮' in lc or 'email' in lc:
@@ -45,12 +48,10 @@ def detect_columns(df: pd.DataFrame):
             col_map['q8'] = c
         if cs.startswith('09') or cs.startswith('9') or '熟悉' in lc or '技能' in lc:
             col_map['q9'] = c
-        if cs.startswith('10') or cs.startswith('11') or cs.startswith('10') or '其他技能' in lc or '选填' in lc:
-            # try to detect 10 and 11; since header may vary, capture both heuristically
-            if 'q10' not in col_map and (cs.startswith('10') or '其他技能' in lc or '选填' in lc):
-                col_map['q10'] = c
-            elif 'q11' not in col_map:
-                col_map['q11'] = c
+        # 10: other skills / optional free-text
+        if cs.startswith('10') or '其他技能' in lc or '选填' in lc:
+            col_map['q10'] = c
+        # 11: self-reported proficiency / 熟练度
         if cs.startswith('11') or '熟练度' in lc or '开发熟练度' in lc:
             col_map['q11'] = c
         if cs.startswith('12') or '分歧' in lc or '时间紧迫' in lc:
@@ -78,12 +79,13 @@ def encode_single_choice(series: pd.Series):
     and `categories` is the ordered list of category strings corresponding
     to codes 1..K.
     """
-    # normalize strings and treat empty as missing
+    # normalize strings and treat empty as missing: operate vectorized with pandas Series
     s = series.fillna('').astype(str).str.strip()
-    # use pandas Categorical to get stable category ordering
+    # `pd.Categorical` produces a stable integer code per category (codes -1..K-1)
+    # using categorical is faster and more memory-efficient than manual mapping.
     cats = pd.Categorical(s.replace('', np.nan))
     codes = cats.codes  # -1 denotes NaN/missing
-    # map -1 -> 0 (missing), else +1 so categories map to 1..K
+    # map -1 -> 0 (missing), else +1 so categories map to 1..K (compact representation)
     codes = np.where(codes == -1, 0, codes + 1).astype(int)
     categories = list(pd.Series(cats.categories).astype(str))
     return codes, categories
@@ -93,10 +95,13 @@ def encode_multi_choice(series: pd.Series):
     """Use MultiLabelBinarizer to produce one-hot binary columns for multi-select options.
     Returns (df_mlb, classes)
     """
+    # Convert each cell into a list of selected choices.
+    # `MultiLabelBinarizer` vectorizes multi-select into a binary indicator matrix (one-hot per choice).
     lists = series.apply(split_multi)
     import inspect
     sig = inspect.signature(MultiLabelBinarizer)
     mlb_params = {}
+    # Some sklearn versions use `sparse_output`; keep compatibility by inspecting signature.
     if 'sparse_output' in sig.parameters:
         mlb_params['sparse_output'] = False
     mlb = MultiLabelBinarizer(**mlb_params)
@@ -106,40 +111,43 @@ def encode_multi_choice(series: pd.Series):
         mat = mlb.fit_transform(lists)
     except Exception:
         return pd.DataFrame(index=series.index), []
+    # prefix generated columns with the original series name to maintain traceability
     cols = [f"{series.name}_{c}" for c in mlb.classes_]
+    # Build a DataFrame from the binary matrix; cast to int for downstream numeric ops
     df_mlb = pd.DataFrame(mat, columns=cols, index=series.index).astype(int)
     return df_mlb, list(mlb.classes_)
 
 
 def score_philosophy(s12: str, s13: str, s14: str):
+    # normalize to lowercase strings for simple keyword heuristics
     s12 = (s12 or '').lower()
     s13 = (s13 or '').lower()
     s14 = (s14 or '').lower()
     sc = 0
-    if '主导' in s12 or '主导者' in s12:
-        sc += 2
-    elif '分析' in s12 or '分析者' in s12:
-        sc += 1
-    if '内归因' in s13 or '反思' in s13:
-        sc += 1
-    if '死磕' in s14 or '不睡' in s14:
-        sc += 2
-    elif '收缩' in s14 or '砍' in s14:
-        sc += 1
-    # map to types
-    if sc >= 5:
-        t = 'strong_driven'
-    elif sc == 4:
-        t = 'practical_leader'
-    elif 2 <= sc <= 3:
-        t = 'balanced'
-    else:
-        t = 'collaborative'
+    if '反思' in s13 :
+        sc+=2
+    elif '情绪化' in s13:
+        sc+=1
+    if '战略' in s14 :
+        sc+=2
+    else :
+        sc+=1
+        # if traits['q6_code']==0 and '死' in s14:
+        #     sc+=1
+    if '作' in s12 :
+        t=3
+    elif '主导' in s12 :
+        t=2
+    else :
+        t=1
+
     return sc, t
 
 
 def load_and_clean(path: Path):
+    # Read CSV into pandas DataFrame. Using dtype=str avoids unwanted type coercion.
     df = pd.read_csv(str(path), dtype=str)
+    # cleanse header whitespace and normalize missing values
     df = df.rename(columns=lambda c: c.strip())
     df = df.fillna('')
 
@@ -169,8 +177,8 @@ def load_and_clean(path: Path):
     if 'timestamp' in col_map:
         traits['timestamp'] = df[col_map['timestamp']]
 
-    # process questions 4..11: generate raw columns and numeric feature columns
-    # NOTE: per spec, only q7 and q9 are multi-select; others are single-choice.
+    # process questions 4..11: create `_raw` trace columns and compact numeric features
+    # NOTE: per spec, q7 and q9 are multi-select (one-hot via MultiLabelBinarizer), others are single-choice
     feature_frames = []  # list of DataFrames with numeric feature columns to be concatenated
     for q in range(4, 12):
         key = f'q{q}'
@@ -186,7 +194,7 @@ def load_and_clean(path: Path):
 
         # q7 and q9 are multi-select (keep as binary indicator columns)
         if key in ('q7', 'q9'):
-            # multi-select: one binary column per option (0/1)
+            # multi-select: one binary indicator column per option (0/1). This keeps sparse categorical info.
             df_mlb, classes = encode_multi_choice(df[col])
             if not df_mlb.empty:
                 # sanitize and append
@@ -194,10 +202,21 @@ def load_and_clean(path: Path):
                 # also add a count of selections as a compact numeric feature
                 df_mlb[f'{key}_count'] = df_mlb.sum(axis=1)
                 feature_frames.append(df_mlb)
+        elif key in ('q10',):
+            continue
+            # # q10: question for 'other skills' or free-text answers.
+            # # Keep the raw text and try to parse it as multi-select (one-hot) like q7/q9.
+            # traits[raw_col] = df[col].astype(str)
+            # df_mlb, classes = encode_multi_choice(df[col])
+            # if not df_mlb.empty:
+            #     df_mlb.columns = [c.replace(' ', '_').replace('/', '_') for c in df_mlb.columns]
+            #     df_mlb[f'{key}_count'] = df_mlb.sum(axis=1)
+            #     feature_frames.append(df_mlb)
         else:
             # single-choice: encode as compact integer codes (0=missing, 1..K categories)
+            # Using integer codes rather than one-hot keeps feature dimensionality small.
             codes, categories = encode_single_choice(df[col])
-            # store the integer codes as a single-column DataFrame
+            # store the integer codes as a single-column DataFrame for concatenation later
             df_codes = pd.DataFrame({f'{key}_code': codes}, index=df.index)
             feature_frames.append(df_codes)
 
@@ -207,7 +226,10 @@ def load_and_clean(path: Path):
     q14_col = col_map.get('q14')
     ph_scores = []
     ph_types = []
-    ph_raw = []
+    q12_list = []
+    q13_list = []
+    q14_list = []
+    # iterate rows to compute philosophy scores. `iterrows()` is acceptable for small-to-moderate data sizes.
     for idx, row in df.iterrows():
         s12 = row[q12_col] if q12_col else ''
         s13 = row[q13_col] if q13_col else ''
@@ -215,14 +237,17 @@ def load_and_clean(path: Path):
         sc, t = score_philosophy(s12, s13, s14)
         ph_scores.append(sc)
         ph_types.append(t)
-        ph_raw.append('|'.join([str(s12), str(s13), str(s14)]))
+        # also keep individual raw answers for q12/q13/q14 to simplify downstream lookups
+        q12_list.append(str(s12))
+        q13_list.append(str(s13))
+        q14_list.append(str(s14))
     # write philosophy fields and numeric code
     traits['philosophy_score'] = ph_scores
     traits['philosophy_type'] = ph_types
-    unique_types = sorted(set(ph_types))
-    type_map = {t: i + 1 for i, t in enumerate(unique_types)}
-    traits['philosophy_type_code'] = [type_map[t] for t in ph_types]
-    traits['philosophy_raw'] = ph_raw
+    # expose q12/q13/q14 raw answers as explicit columns for easier access
+    traits['q12_raw'] = q12_list
+    traits['q13_raw'] = q13_list
+    traits['q14_raw'] = q14_list
 
     # process question 15 (single-choice: encode as integer code)
     q15_col = col_map.get('q15')
@@ -236,27 +261,30 @@ def load_and_clean(path: Path):
         traits['q15_raw'] = ''
 
     # combine numeric feature frames (if any) into traits
+    # combine numeric feature frames (one-hot and codes) into the `traits` DataFrame
     if feature_frames:
+        # concat along columns (axis=1). `reindex` ensures row alignment by original index.
         feat_all = pd.concat(feature_frames, axis=1)
         feat_all = feat_all.reindex(traits.index)
         traits = pd.concat([traits.reset_index(drop=True), feat_all.reset_index(drop=True)], axis=1)
 
     # add q11 quality score
-    if 'q11_raw' in traits.columns:
+    # derive a simple heuristic `q11_quality` score from free-text `q10_raw` (per your request)
+    if 'q10_raw' in traits.columns:
         q11_qualities = []
-        for raw in traits['q11_raw']:
-            raw = raw.strip()
+        for raw in traits['q10_raw']:
+            raw = str(raw).strip()
             if not raw or raw in ['无', '🈚️', '？无', '选填']:
                 q11_qualities.append(0)
-            else:
-                score = 0
-                if 'Python' in raw or 'Pytorch' in raw or 'C++' in raw or 'Java' in raw:
-                    score += 2
-                if '项目' in raw or '论文' in raw or '比赛' in raw or '实习' in raw:
-                    score += 1
-                if 'LaTeX' in raw or 'Stata' in raw or 'MATLAB' in raw or 'SQL' in raw:
-                    score += 1
-                q11_qualities.append(min(score, 3))
+                continue
+            score = 0
+            if any(k in raw for k in ('Python', 'Pytorch', 'C++', 'Java')):
+                score += 1.25
+            if any(k in raw for k in ('项目', '论文', '比赛', '实习')):
+                score += 2.0
+            if any(k in raw for k in ('LaTeX', 'Stata', 'MATLAB', 'SQL')):
+                score += 0.5
+            q11_qualities.append(min(score, 3))
         traits['q11_quality'] = q11_qualities
 
     # sort by numeric survey id if possible
@@ -273,8 +301,45 @@ def load_and_clean(path: Path):
 
 
 def export_traits(traits: pd.DataFrame, out_path: Path):
-    traits.to_csv(str(out_path), index=False)
-    print(f'Exported trait file: {out_path}')
+    # Create a more concise export: keep identifiers, compact numeric features,
+    # one-hot indicator columns, some raw text fields useful for human review,
+    # and philosophy summary fields. This reduces the CSV width compared to
+    # exporting every intermediate `_raw` column.
+    cols = []
+    # basic identifiers
+    for c in ('survey_id', 'person_id', 'email'):
+        if c in traits.columns:
+            cols.append(c)
+
+    # compact numeric feature columns (codes, counts, scores, quality)
+    cols += [c for c in traits.columns if c.endswith('_code') or c.endswith('_quality')]
+
+    # keep some raw text fields that are useful for manual inspection
+    for c in ('q10_raw', 'q12_raw', 'q13_raw', 'q14_raw', 'q15_raw'):
+        if c in traits.columns and c not in cols:
+            cols.append(c)
+
+    # philosophy summary fields — only export compact summary (score and type)
+    for c in ('philosophy_score', 'philosophy_type'):
+        if c in traits.columns and c not in cols:
+            cols.append(c)
+
+    # # include one-hot indicator columns produced by MultiLabelBinarizer: they typically
+    # # have an underscore in the name but are not `_raw`/`_code`/`_count` etc.
+    # onehot_candidates = [c for c in traits.columns if ('_' in c and not c.endswith('_raw') and not c.endswith('_code') and not c.endswith('_count') and not c.endswith('_score') and not c.endswith('_quality') and not c.startswith('philosophy'))]
+    # for c in onehot_candidates:
+    #     if c not in cols:
+    #         cols.append(c)
+
+    # fall back: if cols is empty for some reason, export full traits
+    if not cols:
+        export_df = traits
+    else:
+        # preserve original row order
+        export_df = traits.loc[:, [c for c in cols if c in traits.columns]]
+
+    export_df.to_csv(str(out_path), index=False)
+    print(f'Exported concise trait file: {out_path} (columns: {len(export_df.columns)})')
 
 
 if __name__ == '__main__':

@@ -13,22 +13,24 @@ def parse_multi(s: str):
     return [x.strip() for x in re.split(SEPARATOR, str(s)) if x.strip()]
 
 
-def compute_similarity(i: int, j: int, df: pd.DataFrame):
+def compute(i: int, j: int, df: pd.DataFrame):
     """
     Compute similarity score between person i and j based on survey responses.
     Higher score means better match.
     """
+    # `df` is expected to be the traits DataFrame produced by `preprocess.py`.
+    # We operate with integer-location indexing (`iloc`) because callers pass indices (0-based positions).
     score = 0.0
     
     # 04: 参加意愿 - 相同高分
-    if df.iloc[i]['q4_code'] == df.iloc[j]['q4_code']:
-        score += 2.0  # 都确定参加最高
-    elif df.iloc[i]['q4_code'] == 1 and df.iloc[j]['q4_code'] == 1:  # 都确定
-        score += 2.0
+    if df.iloc[i]['q4_code'] == 1 and df.iloc[j]['q4_code'] == 1:  # 都确定
+        score += 4.0
     elif df.iloc[i]['q4_code'] == 2 and df.iloc[j]['q4_code'] == 2:  # 都大概率
-        score += 1.5
-    else:
-        score += 0.5  # 不同也给点分
+        score += 2.0
+    elif df.iloc[i]['q4_code'] + df.iloc[j]['q4_code'] == 3 :
+        score += 1.5  # 不同也给点分
+    else :
+        score +=0.5
     
     # 05: 组队意愿 - 都接受匹配高分
     if df.iloc[i]['q5_code'] == 1 and df.iloc[j]['q5_code'] == 1:  # 都完全接受
@@ -40,54 +42,47 @@ def compute_similarity(i: int, j: int, df: pd.DataFrame):
     
     # 06: 目标 - 相同高分
     if df.iloc[i]['q6_code'] == df.iloc[j]['q6_code']:
-        score += 1.5
+        score += 3.0
     else:
-        score += 0.5  # 不同目标也可能互补
+        score += 1.5  # 不同目标也可能互补
     
-    # 07: 赛道 - 多选，共同选择越多分越高
+    # 07: multi-select tracks are stored as binary one-hot columns (0/1). Compute Jaccard similarity.
     q7_cols = [c for c in df.columns if c.startswith('8.你最感兴趣的赛道是？:')]
+    # use boolean checks against 1 (int) coming from one-hot indicators
     common_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
     total_tracks = sum(1 for c in q7_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
     if total_tracks > 0:
         jaccard = common_tracks / total_tracks
-        score += jaccard * 2.0  # 最大 2.0
+        # scale contribution to the overall matching score
+        score += jaccard * 2.2
     
-    # 08: 掌控部分 - 相同高分，互补也行
+    # 08: 掌控部分 
     if df.iloc[i]['q8_code'] == df.iloc[j]['q8_code']:
         score += 1.5
     else:
-        score += 1.0  # 不同部分可能互补
+        score += 2.0  # 不同部分可能互补
     
-    # 09: 技能 - 多选，共同技能越多分越高
+    # 09: skills (multi-select one-hot). same Jaccard approach as tracks
     q9_cols = [c for c in df.columns if c.startswith('11.其他技能（选填）_')]
     common_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 and df.iloc[j][c] == 1)
     total_skills = sum(1 for c in q9_cols if df.iloc[i][c] == 1 or df.iloc[j][c] == 1)
     if total_skills > 0:
         jaccard = common_skills / total_skills
-        score += jaccard * 2.0  # 最大 2.0
+        score += jaccard * 2.0
     
-    # 11: AI开发熟练度 - 相似水平高分
-    diff_level = abs(df.iloc[i]['q11_code'] - df.iloc[j]['q11_code'])
-    score += max(0, 1.0 - diff_level * 0.3)  # 相同 1.0, 相差1 0.7, 相差2 0.4, 相差3 0.1
     
     # q11_quality - 相似质量高分
+    # q11_quality is a heuristic numeric score (0..3) derived from free text; closer quality -> higher score
     diff_quality = abs(df.iloc[i]['q11_quality'] - df.iloc[j]['q11_quality'])
-    score += max(0, 1.0 - diff_quality * 0.3)
+    score += max(0, 4.0 - diff_quality * 0.3)
     
     # helper to safely get raw/text fields; fallback to philosophy_raw parts if available
+    # helper to retrieve raw/text answers. Use `df.at` for fast scalar access by label.
     def _get_raw(idx, col):
-        if col in df.columns:
-            return str(df.at[idx, col])
-        # fallback: philosophy_raw contains q12|q13|q14 in preprocess
-        if 'philosophy_raw' in df.columns and col in ('q12_raw', 'q13_raw', 'q14_raw'):
-            parts = str(df.at[idx, 'philosophy_raw']).split('|')
-            mapping = {'q12_raw': 0, 'q13_raw': 1, 'q14_raw': 2}
-            p = mapping[col]
-            if len(parts) > p:
-                return parts[p]
-        return ''
+        return str(df.at[idx, col]) if col in df.columns else ''
 
     # 12: 分歧处理 - 相同风格高分
+    # comparing verbatim raw text answers can be noisy but is simple and explainable here
     v_i = _get_raw(i, 'q12_raw')
     v_j = _get_raw(j, 'q12_raw')
     score += 1.0 if v_i == v_j and v_i != '' else 0.5
@@ -103,16 +98,19 @@ def compute_similarity(i: int, j: int, df: pd.DataFrame):
     score += 1.0 if v_i == v_j and v_i != '' else 0.5
     
     # 15: 作品偏好 - 相同高分
+    # q15_code is a compact integer encoding for single-choice Q15
     if df.iloc[i]['q15_code'] == df.iloc[j]['q15_code']:
         score += 1.0
     else:
         score += 0.5
     
     # 哲学类型 - 相同类型高分
+    # philosophy_type is a categorical label produced by `score_philosophy`.
+    # Matching types should increase compatibility; different types might also complement each other.
     if df.iloc[i]['philosophy_type'] == df.iloc[j]['philosophy_type']:
-        score += 1.5
+        score += 3.0
     else:
-        score += 0.5
+        score += 2.0
     
     # 哲学分数 - 接近高分
     diff_phil = abs(df.iloc[i]['philosophy_score'] - df.iloc[j]['philosophy_score'])

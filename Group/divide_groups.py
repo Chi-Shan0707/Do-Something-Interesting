@@ -11,10 +11,12 @@ def load_matrix(path: Path):
         rows = list(reader)
     if not rows:
         return [], np.zeros((0, 0))
+    # first row is header: ['', id1, id2, ...] (CSV produced by pandas.to_csv with no index name)
     header = rows[0]
     ids = header[1:]
     n = len(ids)
     mat = np.zeros((n, n), dtype=float)
+    # parse rows into a numpy matrix; convert strings to float
     for i, row in enumerate(rows[1:1 + n]):
         for j in range(n):
             mat[i, j] = float(row[j + 1])
@@ -34,8 +36,10 @@ def greedy_grouping(ids, mat, group_size=4):
       between x and other members of G; lower sum -> less important.
     - Stop when no more groups can be formed and return list of groups (each list of ids).
     """
+    # `mat` is a dense NumPy matrix of pairwise similarity scores
     n = len(ids)
     # pair list
+    # generate all upper-triangle pairs and sort by score descending (greedy seeding)
     pairs = []
     for i in range(n):
         for j in range(i + 1, n):
@@ -202,6 +206,7 @@ def force_grouping_exact(ids, mat, group_size=4, max_iters=10_000_000):
         return []
 
     # precompute preference lists for each person
+    # Precompute preference lists (rank other indices by similarity). Sorting uses Python lists.
     prefs = [None] * n
     for i in range(n):
         others = list(range(n))
@@ -214,6 +219,7 @@ def force_grouping_exact(ids, mat, group_size=4, max_iters=10_000_000):
     iters = 0
 
     # pick seed by total similarity to others (descending)
+    # compute aggregate similarity per person to use as seed selection heuristic
     total_sim = [sum(mat[i, j] for j in range(n) if j != i) for i in range(n)]
 
     while unassigned and iters < max_iters:
