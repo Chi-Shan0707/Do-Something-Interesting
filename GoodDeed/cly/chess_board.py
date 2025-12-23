@@ -1,6 +1,7 @@
 
 from pieces import Rook, Horse, Elephant, Advisor, General, Cannon, Soldier
 import pickle
+import os
 
 class ChessBoard:
     def __init__(self):
@@ -48,6 +49,7 @@ class ChessBoard:
     
     def display(self):
         """显示棋盘"""
+        os.system('clear')
         print("\n  a   b   c   d   e   f   g   h   i")
         
         for i in range(10):
