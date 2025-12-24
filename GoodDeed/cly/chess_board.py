@@ -119,50 +119,52 @@ class ChessBoard:
 
     def is_checkmate(self, target_color):
         """检查指定颜色是否被将死"""
-        # 先检查是否被将军
+        # 先必须处于被将军状态，才可能是将死
         if not self.is_check(target_color):
             return False
 
-        # 遍历该方所有棋子，检查是否有合法移动能解除将军
+        # 如果有任何合法走法能解除将军，则不是将死
+        if self.has_any_legal_moves(target_color):
+            return False
+
+        return True
+
+    def has_any_legal_moves(self, color):
+        """检查指定颜色是否存在任何合法走法（用于判定将死或困杀）"""
         for from_row in range(10):
             for from_col in range(9):
                 piece = self.board[from_row][from_col]
-                if piece and piece.color == target_color:
-                    # 遍历所有可能的目标位置
+                if piece and piece.color == color:
                     for to_row in range(10):
                         for to_col in range(9):
-                            # 跳过己方棋子位置
-                            if self.board[to_row][to_col] and self.board[to_row][to_col].color == target_color:
+                            # 目标为己方棋子，跳过
+                            if self.board[to_row][to_col] and self.board[to_row][to_col].color == color:
                                 continue
-                            # 检查移动是否合法
-                            if piece.is_valid_move(to_row, to_col, self.board):
-                                # 模拟移动，检查是否解除将军
-                                # 保存原始状态
-                                original_piece = self.board[to_row][to_col]
-                                original_from = self.board[from_row][from_col]
-                                original_piece_row = piece.row
-                                original_piece_col = piece.col
+                            if not piece.is_valid_move(to_row, to_col, self.board):
+                                continue
 
-                                # 执行模拟移动
-                                self.board[to_row][to_col] = piece
-                                self.board[from_row][from_col] = None
-                                piece.row = to_row
-                                piece.col = to_col
+                            # 模拟移动并检查是否仍被将军
+                            original_dest = self.board[to_row][to_col]
+                            original_from = self.board[from_row][from_col]
+                            orig_r, orig_c = piece.row, piece.col
 
-                                # 检查是否还被将军
-                                check_after = self.is_check(target_color)
+                            # 执行模拟移动
+                            self.board[to_row][to_col] = piece
+                            self.board[from_row][from_col] = None
+                            piece.row = to_row
+                            piece.col = to_col
 
-                                # 恢复原始状态
-                                self.board[from_row][from_col] = original_from
-                                self.board[to_row][to_col] = original_piece
-                                piece.row = original_piece_row
-                                piece.col = original_piece_col
+                            still_in_check = self.is_check(color)
 
-                                # 如果有任何移动能解除将军，则不是将死
-                                if not check_after:
-                                    return False
-        # 所有移动都无法解除将军，将死
-        return True
+                            # 恢复
+                            self.board[from_row][from_col] = original_from
+                            self.board[to_row][to_col] = original_dest
+                            piece.row = orig_r
+                            piece.col = orig_c
+
+                            if not still_in_check:
+                                return True
+        return False
     
     def stop_game(self):
         """停止游戏"""
@@ -212,41 +214,39 @@ class ChessBoard:
         self.board[from_row][from_col] = None
         piece.row = to_row
         piece.col = to_col
-
-        if self.is_checkmate(self.current_player):
-            # 移动不合法，恢复到移动之前，重新移动
-            # 获取最后一步移动记录
-            last_move = self.move_history.pop()
-            from_row, from_col = last_move['from_pos']
-            to_row, to_col = last_move['to_pos']
-            piece = last_move['piece']
-            captured_piece = last_move['captured_piece']
-            player = last_move['player']
-
-            # 恢复棋子位置
+        # 检查是否使自己被将军（自将）
+        if self.is_check(self.current_player):
+            # 恢复到移动之前
             self.board[from_row][from_col] = piece
-            self.board[to_row][to_col] = captured_piece
+            self.board[to_row][to_col] = move_record['captured_piece']
             piece.row = from_row
             piece.col = from_col
             return False, "不能使自己被将军，请重新移动"
 
         enemy_color = 'black' if self.current_player == 'red' else 'red'
+
+        # 被将死（对方被将且无任何解法）
         if self.is_checkmate(enemy_color):
             self.game_over = True
             self.move_history.append(move_record)
             return True, f"将死！{self.current_player}方获胜"
-        elif self.is_check(enemy_color):
+
+        # 将军但未将死
+        if self.is_check(enemy_color):
             self.move_history.append(move_record)
-            # 切换玩家
             self.current_player = enemy_color
             return True, "将军！"
 
-        # 记录移动历史
+        # 非将军的情况下，检查对方是否无任何合法走法（困杀）
+        if not self.has_any_legal_moves(enemy_color):
+            # 困杀：对方无路可走且不在将军状态，按要求判为无路可走一方输
+            self.game_over = True
+            self.move_history.append(move_record)
+            return True, f"困杀！{self.current_player}方获胜"
+
+        # 普通走子，记录并切换玩家
         self.move_history.append(move_record)
-        
-        # 切换玩家
-        self.current_player = 'black' if self.current_player == 'red' else 'red'
-        
+        self.current_player = enemy_color
         return True, "移动成功"
 
     def position_to_coords(self, pos_str):
